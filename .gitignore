@@ -1,0 +1,8 @@
+# Virtual Environments
+.venv/
+venv/
+.venv
+
+# Folders
+data/
+data/*
