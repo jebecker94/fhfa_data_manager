@@ -8,6 +8,7 @@ import time
 # URL of the FHFA Public Use Database page
 base_url = 'https://www.fhfa.gov/data/pudb'
 
+# Courtesy pause length to prevent overwhelming the server
 pause_length=5
 
 # Directory to save downloaded files
