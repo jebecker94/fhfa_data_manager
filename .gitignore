@@ -6,3 +6,5 @@ venv/
 # Folders
 data/
 data/*
+dictionary_files/
+dictionary_files/*
