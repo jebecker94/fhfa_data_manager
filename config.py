@@ -12,5 +12,5 @@ from pathlib import Path
 # Specific Data Folders
 PROJECT_DIR = config('PROJECT_DIR', default=Path(os.getcwd()))
 DATA_DIR = config('DATA_DIR', default=PROJECT_DIR/'data')
-RAW_DIR = config('HMDA_RAW_DIR', default=DATA_DIR/'raw')
-CLEAN_DIR = config('HMDA_CLEAN_DIR', default=DATA_DIR/'clean')
+RAW_DIR = config('FHFA_RAW_DIR', default=DATA_DIR/'raw')
+CLEAN_DIR = config('FHFA_CLEAN_DIR', default=DATA_DIR/'clean')
