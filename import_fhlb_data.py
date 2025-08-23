@@ -115,15 +115,15 @@ def import_fhlb_acquisitions_data(data_folder, save_folder, dictionary_folder, m
     Parameters
     ----------
     data_folder : str
-        DESCRIPTION.
+        Folder containing raw yearly acquisition files.
     save_folder : str
-        DESCRIPTION.
+        Folder where cleaned yearly acquisitions data will be saved.
     dictionary_folder : str
-        DESCRIPTION.
+        Folder containing field name mappings for standardizing columns.
     min_year : int, optional
-        DESCRIPTION. The default is 2009.
+        First year of acquisitions data to import. The default is 2009.
     max_year : int, optional
-        DESCRIPTION. The default is 2022.
+        Last year of acquisitions data to import. The default is 2022.
 
     Returns
     -------
