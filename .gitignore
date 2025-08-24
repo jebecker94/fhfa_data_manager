@@ -1,10 +1,30 @@
-# Virtual Environments
+# Environment and local config
+.env
+.env.*
+
+# Virtual environments
 .venv/
 venv/
-.venv
 
-# Folders
+# Python caches and tooling
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.coverage
+htmlcov/
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+
+# Project data and caches
 data/
-data/*
-dictionary_files/
-dictionary_files/*
+.cache/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+

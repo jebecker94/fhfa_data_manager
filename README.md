@@ -1,9 +1,37 @@
-# fhfa_data_manager
-Tools for managing the FHFA public use data.
+# FHFA Data Manager
 
-# Functionality
-1. Reads in, cleans, and combines public use FHFA data for acquisitions by FHLMC and FNMA.
-2. Reads, cleans, and combines membership and acquired member asset data of the FHLB reported to FHFA.
+Streamlined tools for downloading, validating, and transforming FHFA-related datasets.
 
-# How To Use This Project
-1. First download the FHFA and FHLB data files at: <URL>
+## Quick Start
+
+1) Create a virtual environment
+
+- Windows (PowerShell)
+  - `python -m venv .venv`
+  - `.venv\\Scripts\\Activate.ps1`
+- macOS/Linux
+  - `python -m venv .venv`
+  - `. .venv/bin/activate`
+
+2) Install dependencies
+
+- `pip install -e .[dev]`
+
+3) Configure environment
+
+- Copy `.env.example` to `.env` and adjust paths/keys as needed.
+- Defaults place data under `./data/{raw,processed}`.
+
+4) Run tests
+
+- `pytest -q`
+- With coverage: `pytest --cov=fhfa_data_manager`
+
+## Developer Guide
+
+- See `AGENTS.md` for project structure, commands, coding style, testing, and PR conventions.
+
+## Notes
+
+- Do not commit data or secrets. `data/` and `.env*` are ignored by default (see `.gitignore`).
+- Prefer `ruff` for linting and formatting: `ruff check . && ruff format .`.
