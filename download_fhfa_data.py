@@ -6,13 +6,10 @@ from urllib.parse import urljoin, urlparse
 import time
 
 # Download FHFA Data
-def download_fhfa_data(base_url:str, download_dir:str, pause_length: int=5) :
+def download_fhfa_data(base_url: str, download_dir: str, allowed_extensions: list[str], included_substring: str='', pause_length: int=5) :
 
     # Create the download directory if it doesn't exist
     os.makedirs(download_dir, exist_ok=True)
-
-    # Allowed file extensions
-    allowed_extensions = {'.zip', '.txt', '.csv', '.pdf'}
 
     # Fetch the webpage content
     response = requests.get(base_url)
@@ -48,8 +45,16 @@ def download_fhfa_data(base_url:str, download_dir:str, pause_length: int=5) :
         if ext.lower() not in allowed_extensions:
             continue
 
+        # Check for Included Substring
+        if included_substring not in file_name:
+            continue
+
         # Define the full path to save the file
         file_path = os.path.join(download_dir, file_name)
+
+        # Skip if the file already exists
+        if os.path.exists(file_path):
+            continue
 
         # Download and Save the Files
         try:
@@ -76,9 +81,14 @@ if __name__=='__main__':
     # URL of the FHFA Public Use Database page
     base_url = 'https://www.fhfa.gov/data/pudb'
 
-    # Directory to save downloaded files
-    download_dir = './data/raw'
+    # Download FHFA Data Files (zip files with pudb substring)
+    download_dir = './data/raw/fhfa'
+    download_fhfa_data(base_url, download_dir, included_substring='pudb', allowed_extensions=['.zip'])
 
-    # Download Data
-    download_fhfa_data(base_url, download_dir)
-    
+    # Download FHLB Data Files (csv files with pudb substring)
+    download_dir = './data/raw/fhlb'
+    download_fhfa_data(base_url, download_dir, included_substring='pudb', allowed_extensions=['.csv'])
+
+    # Download Data Files
+    download_dir = './dictionary_files'
+    download_fhfa_data(base_url, download_dir, allowed_extensions=['.pdf'])
