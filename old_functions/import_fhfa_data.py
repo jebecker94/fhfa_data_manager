@@ -403,12 +403,12 @@ if __name__ == '__main__' :
     driver_names = [i for i in pyodbc.drivers() if i.startswith('Microsoft Access Driver')]
 
     # Conforming Loan Limits
-    data_folder = RAW_DIR / f'conforming_loan_limits'
+    data_folder = RAW_DIR / 'conforming_loan_limits'
     save_folder = DATA_DIR
     # import_conforming_limits(data_folder, save_folder, min_year = 2011, max_year = 2024)
 
     # FHFA
-    data_folder = RAW_DIR / f'zip_files'
+    data_folder = RAW_DIR / 'zip_files'
     save_folder = CLEAN_DIR
     # convert_fhfa_access_files(data_folder, save_folder, file_string = '2023*SFCensus')
     # combine_fhfa_halves_after_2020(2023, save_folder)
