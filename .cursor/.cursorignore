@@ -1,0 +1,22 @@
+# Exclude large or sensitive content from Cursor's AI context
+# Adjust as needed for your workflow
+
+# VCS and env
+.git/
+.venv/
+.pytest_cache/
+
+# Data and artifacts
+data/
+assets/**/*.parquet
+**/*.parquet
+**/*.feather
+**/*.h5
+**/*.hdf5
+**/*.sqlite
+**/*.db
+**/*.log
+
+# Notebooks and outputs (uncomment if desired)
+# notebooks/.ipynb_checkpoints/
+# **/.ipynb_checkpoints/
