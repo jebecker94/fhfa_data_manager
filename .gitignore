@@ -4,7 +4,6 @@
 
 # Virtual environments
 .venv/
-venv/
 
 # Python caches and tooling
 __pycache__/

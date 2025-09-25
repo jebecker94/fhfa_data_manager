@@ -17,6 +17,8 @@ import os
 import glob
 import zipfile
 import subprocess
+import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Iterable, Literal
@@ -34,6 +36,9 @@ from pyarrow import csv as pacsv
 from dateutil.relativedelta import relativedelta
 import requests
 from bs4 import BeautifulSoup
+from bs4.element import Tag
+import fitz  # PyMuPDF
+import polars as pl
 
 
 # -----------------------------
@@ -129,8 +134,12 @@ def _download_from_page(base_url: str,
     substrings_lower = tuple(s.lower() for s in included_substrings) if included_substrings else tuple()
 
     for link in links:
-        href = link['href']
-        file_url = urljoin(base_url, href)
+        if not isinstance(link, Tag):
+            continue
+        href_value = link.get('href')
+        if not isinstance(href_value, str) or not href_value:
+            continue
+        file_url = urljoin(base_url, href_value)
         parsed = urlparse(file_url)
         file_name = os.path.basename(parsed.path)
         if not file_name:
@@ -185,6 +194,82 @@ class FHFADataLoader:
     def download_dictionaries(self, base_url: str, dictionary_dir: Path, pause_seconds: Optional[int] = None) -> None:
         ps = pause_seconds if pause_seconds is not None else self.options.pause_length_seconds
         _download_from_page(base_url, dictionary_dir, allowed_extensions=['.pdf'], included_substrings=None, pause_seconds=ps)
+
+    def extract_zip_contents(self, zip_dir: Path, dictionary_dir: Path, raw_base_dir: Optional[Path] = None) -> None:
+        """Extract contents of all zip files in ``zip_dir``.
+
+        - .pdf files are saved into ``dictionary_dir/<year>`` (flattened)
+        - .txt files are saved into ``<raw_base_dir>/fhfa/<year>`` (defaults to ``self.paths.raw_dir``)
+
+        The year is inferred primarily from the zip file name; if not found,
+        falls back to the inner member name. If no year is found, files are
+        If no year is found, files are placed under an ``unknown`` subfolder.
+        Honors ``self.options.overwrite``.
+        """
+        raw_root = raw_base_dir or self.paths.raw_dir
+        dictionary_dir.mkdir(parents=True, exist_ok=True)
+        raw_root.mkdir(parents=True, exist_ok=True)
+        raw_fhfa_root = raw_root / 'fhfa'
+        raw_fhfa_root.mkdir(parents=True, exist_ok=True)
+
+        # Collect zip files (case-insensitive) in the provided directory
+        zip_paths: list[Path] = [p for p in Path(zip_dir).iterdir() if p.is_file() and p.suffix.lower() == '.zip']
+        for zip_path in zip_paths:
+            try:
+                with zipfile.ZipFile(zip_path) as zf:
+                    zip_year = self._infer_year_from_name(zip_path.name)
+                    for member in zf.namelist():
+                        # Skip directories
+                        if member.endswith('/'):
+                            continue
+
+                        _, ext = os.path.splitext(member)
+                        ext_lower = ext.lower()
+                        base_name = os.path.basename(member)
+
+                        # Route PDFs to dictionary_dir/<year>
+                        if ext_lower == '.pdf':
+                            pdf_year = zip_year or self._infer_year_from_name(member)
+                            pdf_folder = 'unknown' if pdf_year is None else str(pdf_year)
+                            out_dir = dictionary_dir / pdf_folder
+                            out_path = out_dir / base_name
+                            if out_path.exists() and not self.options.overwrite:
+                                continue
+                            out_dir.mkdir(parents=True, exist_ok=True)
+                            with zf.open(member) as src, open(out_path, 'wb') as dst:
+                                shutil.copyfileobj(src, dst)
+                            continue
+
+                        # Route TXT files to raw/fhfa/<year> subfolders
+                        if ext_lower == '.txt':
+                            year = zip_year or self._infer_year_from_name(member)
+                            year_folder = 'unknown' if year is None else str(year)
+                            out_dir = raw_fhfa_root / year_folder
+                            out_path = out_dir / base_name
+                            if out_path.exists() and not self.options.overwrite:
+                                continue
+                            out_dir.mkdir(parents=True, exist_ok=True)
+                            with zf.open(member) as src, open(out_path, 'wb') as dst:
+                                shutil.copyfileobj(src, dst)
+                            continue
+            except zipfile.BadZipFile:
+                print(f'Bad zip file encountered and skipped: {zip_path}')
+            except Exception as e:
+                print(f'Failed extracting from {zip_path}: {e}')
+
+    @staticmethod
+    def _infer_year_from_name(name: str) -> Optional[int]:
+        """Infer a plausible 4-digit year from a file or path name.
+
+        Looks for years in [1990, 2035]. If multiple are present, returns the
+        largest year (most recent), which aligns with common FHFA naming.
+        """
+        matches = re.findall(r'(?<!\d)(?:19|20)\d{2}(?!\d)', name)
+        years = [int(y) for y in matches]
+        years = [y for y in years if 1990 <= y <= 2035]
+        if not years:
+            return None
+        return max(years)
 
     # Import Conforming Loan Limits
     def import_conforming_limits(self, data_folder: Path, save_folder: Path, min_year: int = 2011, max_year: int = 2024) -> None:
@@ -416,6 +501,208 @@ class FHFADataLoader:
         save_parquet = f'{clean_fhfa_folder}/gse_sfc_loans_clean_{first_year}-{last_year}.parquet'
         pq.write_table(dt, save_parquet)
 
+    def extract_dictionary_tables_for_year(
+        self,
+        year: int,
+        dictionary_root: Optional[Path] = None,
+        output_formats: Iterable[Literal['csv', 'parquet']] = ('csv', 'parquet'),
+        table_settings: Optional[dict] = None,
+    ) -> None:
+        """Extract and combine tables per PDF in ``dictionary_files/<year>`` and save one file per PDF.
+
+        Parameters
+        ----------
+        year: int
+            Year subfolder under the dictionaries root.
+        dictionary_root: Optional[pathlib.Path]
+            Root directory that contains year subfolders; defaults to ``<project_dir>/dictionary_files``.
+        output_formats: Iterable['csv' | 'parquet']
+            One or both of 'csv' and 'parquet'. Defaults to both. Combined per PDF.
+        table_settings: Optional[dict]
+            Optional settings for PyMuPDF's table detection (currently not used).
+
+        Behavior
+        --------
+        - Iterates all ``*.pdf`` files under ``dictionary_root/<year>`` (non-recursive).
+        - Extracts all tables from every page using PyMuPDF's ``page.find_tables()``.
+        - Retains only tables containing a case/spacing-insensitive "Field #" column.
+        - Combines tables per document, standardizes the column to ``Field #``, coerces to int, sorts by it,
+          and drops duplicate field numbers keeping the first occurrence.
+        - Writes exactly one combined output per PDF next to the source PDF as:
+            ``<pdf_stem>_combined.csv`` and/or ``.parquet``.
+        - Prints a warning if there are gaps in the numbering between min and max ``Field #``.
+        - Honors ``self.options.overwrite``. If both outputs already exist and overwrite=False, skips.
+        """
+
+        dict_root = dictionary_root if dictionary_root is not None else (self.paths.project_dir / 'dictionary_files')
+        year_dir = Path(dict_root) / str(year)
+        if not year_dir.exists() or not year_dir.is_dir():
+            print(f'Dictionary directory does not exist: {year_dir}')
+            return
+
+        formats = set(output_formats)
+
+        pdf_files = [p for p in year_dir.iterdir() if p.is_file() and p.suffix.lower() == '.pdf']
+        for pdf_path in pdf_files:
+            combined_frames: list[pl.DataFrame] = []
+            try:
+                with fitz.open(pdf_path) as doc:
+                    for _page_zero_idx in range(doc.page_count):
+                        page_index = _page_zero_idx + 1
+                        page = doc.load_page(_page_zero_idx)
+                        try:
+                            _find_tables = getattr(page, 'find_tables', None)
+                            tables_result = _find_tables() if callable(_find_tables) else None
+                        except Exception as e:
+                            print(f'find_tables failed on {pdf_path} page {page_index}: {e}')
+                            continue
+
+                        tables_list = getattr(tables_result, 'tables', None) if tables_result is not None else None
+                        if not tables_list:
+                            continue
+
+                        for table in tables_list:
+                            try:
+                                pdf_df = table.to_pandas()
+                            except Exception as e:
+                                print(f'to_pandas failed on {pdf_path} p{page_index}: {e}')
+                                continue
+
+                            df = pl.from_pandas(pdf_df)
+
+                            # Identify a "Field #" column (case/spacing-insensitive)
+                            def normalize_label(label: str) -> str:
+                                text = str(label).lower()
+                                text = re.sub(r'[\s_]+', '', text)
+                                return text
+
+                            field_col: Optional[str] = None
+                            for col in df.columns:
+                                if normalize_label(col) == 'field#':
+                                    field_col = str(col)
+                                    break
+
+                            if field_col is None:
+                                continue
+
+                            # Standardize and expand single or range values (e.g., "19-23")
+                            work = df.rename({field_col: 'Field #'})
+                            # keep original as text
+                            work = work.with_columns([
+                                pl.col('Field #').cast(pl.Utf8, strict=False).alias('field_text')
+                            ])
+                            # parse start and optional end
+                            work = work.with_columns([
+                                pl.col('field_text').str.extract(r'(\d+)', 1).cast(pl.Int64, strict=False).alias('field_start'),
+                                pl.col('field_text').str.extract(r'\d+\s*-\s*(\d+)', 1).cast(pl.Int64, strict=False).alias('field_end'),
+                            ])
+                            # if no end, end = start, then build list range [start..end]
+                            work = work.with_columns([
+                                pl.coalesce([pl.col('field_end'), pl.col('field_start')]).alias('field_end2'),
+                            ]).with_columns([
+                                pl.int_ranges(pl.col('field_start'), pl.col('field_end2') + 1).alias('FieldNums')
+                            ])
+                            # explode and set Field # to each number
+                            work = work.explode('FieldNums').with_columns([
+                                pl.col('FieldNums').alias('Field #')
+                            ]).drop(['field_text', 'field_start', 'field_end', 'field_end2', 'FieldNums'])
+                            # Drop rows with empty Field #
+                            work = work.filter(pl.col('Field #').is_not_null())
+
+                            combined_frames.append(work)
+            except Exception as e:
+                print(f'Failed processing {pdf_path}: {e}')
+                combined_frames = []
+
+            if not combined_frames:
+                continue
+
+            combined = pl.concat(combined_frames, how='vertical', rechunk=True)
+            # Drop rows without field number, drop dupes on 'Field #', sort by it
+            if 'Field #' in combined.columns:
+                combined = combined.filter(pl.col('Field #').is_not_null())
+                combined = combined.unique(subset=['Field #'], keep='first')
+                combined = combined.sort('Field #')
+
+                # Gap check
+                vals_list = [int(x) for x in combined['Field #'].to_list() if x is not None]
+                if vals_list:
+                    min_field = min(vals_list)
+                    max_field = max(vals_list)
+                    missing_numbers = sorted(set(range(min_field, max_field + 1)) - set(vals_list))
+                    if missing_numbers:
+                        print(f"Warning: gaps detected in '{pdf_path.name}' Field # range {min_field}-{max_field}: missing {missing_numbers[:20]}{'...' if len(missing_numbers)>20 else ''}")
+
+            out_csv = pdf_path.with_name(f"{pdf_path.stem}_combined.csv")
+            out_parquet = pdf_path.with_name(f"{pdf_path.stem}_combined.parquet")
+
+            if not self.options.overwrite and out_csv.exists() and out_parquet.exists():
+                continue
+
+            if 'csv' in formats:
+                combined.write_csv(str(out_csv))
+            if 'parquet' in formats:
+                combined.write_parquet(str(out_parquet))
+
+    def extract_dictionary_tables_all_years(
+        self,
+        dictionary_root: Optional[Path] = None,
+        output_formats: Iterable[Literal['csv', 'parquet']] = ('csv', 'parquet'),
+        table_settings: Optional[dict] = None,
+        years: Optional[Iterable[int]] = None,
+        min_year: Optional[int] = None,
+        max_year: Optional[int] = None,
+    ) -> None:
+        """Parse and combine dictionary tables for all year subfolders under the dictionaries root.
+
+        Parameters
+        ----------
+        dictionary_root: Optional[pathlib.Path]
+            Root directory that contains year subfolders; defaults to ``<project_dir>/dictionary_files``.
+        output_formats: Iterable['csv' | 'parquet']
+            Output format(s) to write per PDF (combined). Defaults to both.
+        table_settings: Optional[dict]
+            Optional settings for PyMuPDF table detection (reserved).
+        years: Optional[Iterable[int]]
+            Explicit list of years to process. If None, infer from subfolder names.
+        min_year, max_year: Optional[int]
+            When inferring years from subfolders, restrict to this inclusive range if provided.
+        """
+
+        dict_root = dictionary_root if dictionary_root is not None else (self.paths.project_dir / 'dictionary_files')
+        root = Path(dict_root)
+        if not root.exists() or not root.is_dir():
+            print(f'Dictionary root does not exist: {root}')
+            return
+
+        if years is not None:
+            year_list = sorted({int(y) for y in years})
+        else:
+            candidates = [p for p in root.iterdir() if p.is_dir()]
+            inferred: list[int] = []
+            for p in candidates:
+                try:
+                    y = int(p.name)
+                except Exception:
+                    continue
+                if 1990 <= y <= 2035:
+                    inferred.append(y)
+            year_list = sorted(set(inferred))
+
+        if min_year is not None or max_year is not None:
+            lo = min_year if min_year is not None else -10**9
+            hi = max_year if max_year is not None else 10**9
+            year_list = [y for y in year_list if lo <= y <= hi]
+
+        for y in year_list:
+            print(f'Processing dictionary tables for year: {y}')
+            self.extract_dictionary_tables_for_year(
+                year=y,
+                dictionary_root=root,
+                output_formats=output_formats,
+                table_settings=table_settings,
+            )
+
 
 # -----------------------------
 # FHLB Loader
@@ -623,3 +910,55 @@ __all__ = [
     'FHFADataLoader',
     'FHLBDataLoader',
 ]
+
+def debug_run_fhfa_extract(
+    overwrite: bool = False,
+    zip_dir: Optional[Path] = None,
+    dictionary_dir: Optional[Path] = None,
+) -> None:
+    """Convenience function for IDE interactive debugging.
+
+    - Uses env/default paths via ``PathsConfig.from_env()``
+    - Commented-out download steps; only runs extraction
+
+    Parameters
+    ----------
+    overwrite: bool
+        If True, re-write existing extracted files.
+    zip_dir: Optional[pathlib.Path]
+        Directory containing FHFA .zip files; defaults to ``<raw_dir>/fhfa``.
+    dictionary_dir: Optional[pathlib.Path]
+        Directory to save dictionary PDFs; defaults to ``<project_dir>/dictionary_files``.
+    """
+    paths = PathsConfig.from_env()
+    options = ImportOptions(overwrite=overwrite)
+    fhfa = FHFADataLoader(paths, options)
+
+    fhfa_zip_dir = zip_dir if zip_dir is not None else (paths.raw_dir / 'fhfa')
+    dict_dir = dictionary_dir if dictionary_dir is not None else (paths.project_dir / 'dictionary_files')
+
+    print(f'Using project directory: {paths.project_dir}')
+    print(f'Raw dir: {paths.raw_dir}')
+    print(f'FHFA zip dir: {fhfa_zip_dir}')
+    print(f'Dictionary dir: {dict_dir}')
+
+    # Download steps are intentionally commented out (already run)
+    # base_url = 'https://www.fhfa.gov/data/pudb'
+    # fhfa.download(base_url, fhfa_zip_dir, include_substrings=("pudb",), pause_seconds=None)
+    # fhfa.download_dictionaries(base_url, dict_dir, pause_seconds=None)
+
+    # Extract zip contents
+    print('Extracting FHFA zip contents...')
+    fhfa.extract_zip_contents(zip_dir=fhfa_zip_dir, dictionary_dir=dict_dir, raw_base_dir=paths.raw_dir)
+    print('Extraction complete.')
+
+    # Extract dictionary tables
+    print('Extracting FHFA dictionary tables...')
+    # fhfa.extract_dictionary_tables_for_year(year=2023, dictionary_root=dict_dir, output_formats=('csv', 'parquet'), table_settings=None)
+    fhfa.extract_dictionary_tables_all_years(dictionary_root=dict_dir, output_formats=('csv', 'parquet'), table_settings=None)
+    print('Extraction complete.')
+
+
+## Main routine
+if __name__ == '__main__':
+    debug_run_fhfa_extract()
