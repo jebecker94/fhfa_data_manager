@@ -293,52 +293,6 @@ class FHFADataLoader:
         df.to_csv(f'{save_folder}/conforming_loan_limits_{min_year}-{max_year}.csv.gz',
                   compression='gzip', index=False)
 
-    # Convert Files from Microsoft Access Format to CSV
-    def convert_access_files(self, data_folder: Path, save_folder: Path, file_string: str = 'SFCensus') -> None:
-        folders = glob.glob(f'{data_folder}/*{file_string}*.zip')
-        for folder in folders:
-            with zipfile.ZipFile(folder) as z:
-                access_files = [x for x in z.namelist() if '.accdb' in x]
-                for file in access_files:
-                    savename = f'{save_folder}/{file.replace(".accdb", ".csv.gz")}'
-                    if Path(savename).exists() and not self.options.overwrite:
-                        continue
-
-                    print('Extracting File:', file)
-                    try:
-                        z.extract(file, path=str(data_folder))
-                    except Exception:
-                        print('Could not unzip file:', file, 'with Python ZipFile. Using 7z instead.')
-                        unzip_string = 'C:/Program Files/7-Zip/7z.exe'
-                        p = subprocess.Popen([unzip_string, 'e', f'{folder}', f'-o{data_folder}', f'{file}', '-y'])
-                        p.wait()
-
-                    newfilename = f'{data_folder}/{file}'
-                    conn_str = (r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};'
-                                r'DBQ=' + newfilename)
-                    conn = pyodbc.connect(conn_str)
-
-                    cursor = conn.cursor()
-                    table_name = None
-                    for i in cursor.tables(tableType='TABLE'):
-                        table_name = i.table_name
-                        print('Table Name:', table_name)
-                        break
-
-                    if not table_name:
-                        conn.close()
-                        try:
-                            os.remove(newfilename)
-                        except Exception:
-                            pass
-                        continue
-
-                    df = pd.read_sql(f'select * from "{table_name}"', conn)
-                    ensure_parent_dir(Path(savename))
-                    df.to_csv(savename, index=False, sep='|', compression='gzip')
-                    conn.close()
-                    os.remove(newfilename)
-
     # Convert Multifamily Files
     def convert_multifamily_files(self, data_folder: Path, save_folder: Path) -> None:
         folders = glob.glob(f'{data_folder}/*MFCensus*.zip')
@@ -800,6 +754,52 @@ class FHFADataLoader:
             encoding=encoding,
         )
         return pl.from_pandas(pd_frame, include_index=False)
+
+    # Deprecated Access loader utilities
+    def convert_access_files(self, data_folder: Path, save_folder: Path, file_string: str = 'SFCensus') -> None:
+        folders = glob.glob(f'{data_folder}/*{file_string}*.zip')
+        for folder in folders:
+            with zipfile.ZipFile(folder) as z:
+                access_files = [x for x in z.namelist() if '.accdb' in x]
+                for file in access_files:
+                    savename = f'{save_folder}/{file.replace(".accdb", ".csv.gz")}'
+                    if Path(savename).exists() and not self.options.overwrite:
+                        continue
+
+                    print('Extracting File:', file)
+                    try:
+                        z.extract(file, path=str(data_folder))
+                    except Exception:
+                        print('Could not unzip file:', file, 'with Python ZipFile. Using 7z instead.')
+                        unzip_string = 'C:/Program Files/7-Zip/7z.exe'
+                        p = subprocess.Popen([unzip_string, 'e', f'{folder}', f'-o{data_folder}', f'{file}', '-y'])
+                        p.wait()
+
+                    newfilename = f'{data_folder}/{file}'
+                    conn_str = (r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};'
+                                r'DBQ=' + newfilename)
+                    conn = pyodbc.connect(conn_str)
+
+                    cursor = conn.cursor()
+                    table_name = None
+                    for i in cursor.tables(tableType='TABLE'):
+                        table_name = i.table_name
+                        print('Table Name:', table_name)
+                        break
+
+                    if not table_name:
+                        conn.close()
+                        try:
+                            os.remove(newfilename)
+                        except Exception:
+                            pass
+                        continue
+
+                    df = pd.read_sql(f'select * from "{table_name}"', conn)
+                    ensure_parent_dir(Path(savename))
+                    df.to_csv(savename, index=False, sep='|', compression='gzip')
+                    conn.close()
+                    os.remove(newfilename)
 
 
 # -----------------------------
