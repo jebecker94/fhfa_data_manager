@@ -954,7 +954,6 @@ def debug_run_fhfa_extract(
 
     # Extract dictionary tables
     print('Extracting FHFA dictionary tables...')
-    # fhfa.extract_dictionary_tables_for_year(year=2023, dictionary_root=dict_dir, output_formats=('csv', 'parquet'), table_settings=None)
     fhfa.extract_dictionary_tables_all_years(dictionary_root=dict_dir, output_formats=('csv', 'parquet'), table_settings=None)
     print('Extraction complete.')
 
