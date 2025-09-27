@@ -180,6 +180,150 @@ class FHFADataLoader:
         self.paths = paths or PathsConfig.from_env()
         self.options = options or ImportOptions()
 
+    # -------------------------------------------------
+    # Dictionary resolution
+    # -------------------------------------------------
+    def resolve_dictionary_for_data_file(
+        self,
+        data_file: Path,
+        *,
+        dictionary_root: Optional[Path] = None,
+        prefer_format: Literal['csv', 'parquet'] = 'parquet',
+    ) -> Optional[Path]:
+        """Return the matching parsed dictionary path for a given FHFA raw data file.
+
+        Rules inferred from file naming conventions:
+        - Prefix indicates enterprise: ``fnma_`` or ``fhlmc_`` (ignored for dictionary selection)
+        - Segment ``sf`` vs ``mf`` distinguishes Single Family vs Multifamily
+        - Letter following the 4-digit year indicates file type:
+          - For Single Family: ``a``, ``b``, ``c``, ``d``
+            - ``c`` aligns with "Single_Family_Census_Tract_File_C"
+            - ``d`` aligns with "Single_Family_National_File_C"
+            - ``a`` -> "Single_Family_National_File_A"
+            - ``b`` -> "Single_Family_National_File_B"
+          - For Multifamily: ``b`` (Units/Property-level in PUDB), ``c`` (Census tract)
+            - We map both MF ``b`` variants to the available MF National File B dictionaries
+              (Property-Level and Unit Class-Level). Preference order is Property-Level.
+
+        The function looks in ``dictionary_files/<year>`` for a file named
+        ``<year>_<Family>_<Descriptor>_combined.(csv|parquet)`` and returns the preferred
+        format if present, else the other. If nothing matches, returns ``None``.
+        """
+
+        path = Path(data_file)
+        year = self._infer_year_from_name(path.name)
+        if year is None:
+            return None
+
+        dict_root = dictionary_root if dictionary_root is not None else (self.paths.project_dir / 'dictionary_files')
+        year_dir = Path(dict_root) / str(year)
+        if not year_dir.exists():
+            return None
+
+        name_lower = path.name.lower()
+        is_single_family = '_sf' in name_lower or 'sf' in name_lower
+        is_multifamily = '_mf' in name_lower or 'mf' in name_lower
+
+        # Extract type letter immediately after year, e.g., sf2013c -> "c"
+        match = re.search(r'(sf|mf)(?:19|20)\d{2}([a-d])', name_lower)
+        letter = match.group(2) if match else None
+
+        candidates: list[str] = []
+        if is_single_family:
+            if letter == 'a':
+                candidates = [f'{year}_Single_Family_National_File_A_combined']
+            elif letter == 'b':
+                candidates = [f'{year}_Single_Family_National_File_B_combined']
+            elif letter == 'c':
+                # Census tract file
+                candidates = [f'{year}_Single_Family_Census_Tract_File_C_combined']
+            elif letter == 'd':
+                # National File C (per user rule)
+                candidates = [f'{year}_Single_Family_National_File_C_combined']
+            else:
+                # Fallback preference order for SF if letter not parsed
+                candidates = [
+                    f'{year}_Single_Family_National_File_C_combined',
+                    f'{year}_Single_Family_Census_Tract_File_C_combined',
+                    f'{year}_Single_Family_National_File_B_combined',
+                    f'{year}_Single_Family_National_File_A_combined',
+                ]
+        elif is_multifamily:
+            if letter == 'c':
+                candidates = [f'{year}_Multifamily_Census_Tract_File_C_combined']
+            else:
+                # MF "b" has two flavors: loans (property-level) and units (unit class-level)
+                # Disambiguate using filename tokens
+                is_units = 'units' in name_lower
+                is_loans = 'loans' in name_lower
+                if is_units and not is_loans:
+                    candidates = [
+                        f'{year}_Multifamily_National_File_Unit_Class-Level_Data_File_B_combined',
+                        f'{year}_Multifamily_National_File_Property-Level_Data_File_B_combined',
+                    ]
+                else:
+                    # Default to loans/property-level if ambiguous
+                    candidates = [
+                        f'{year}_Multifamily_National_File_Property-Level_Data_File_B_combined',
+                        f'{year}_Multifamily_National_File_Unit_Class-Level_Data_File_B_combined',
+                    ]
+        else:
+            # Could not determine family; try SF then MF fallbacks
+            candidates = [
+                f'{year}_Single_Family_National_File_C_combined',
+                f'{year}_Single_Family_Census_Tract_File_C_combined',
+                f'{year}_Single_Family_National_File_B_combined',
+                f'{year}_Single_Family_National_File_A_combined',
+                f'{year}_Multifamily_National_File_Property-Level_Data_File_B_combined',
+                f'{year}_Multifamily_National_File_Unit_Class-Level_Data_File_B_combined',
+                f'{year}_Multifamily_Census_Tract_File_C_combined',
+            ]
+
+        # Try building full paths with preferred format, then the alternate
+        def pick_existing(stem: str) -> Optional[Path]:
+            first = year_dir / f'{stem}.{prefer_format}'
+            if first.exists():
+                return first
+            alt = year_dir / f'{stem}.{"csv" if prefer_format == "parquet" else "parquet"}'
+            if alt.exists():
+                return alt
+            return None
+
+        for stem in candidates:
+            found = pick_existing(stem)
+            if found is not None:
+                return found
+
+        return None
+
+    def resolve_dictionaries_for_year_folder(
+        self,
+        year: int,
+        *,
+        raw_fhfa_root: Optional[Path] = None,
+        dictionary_root: Optional[Path] = None,
+        prefer_format: Literal['csv', 'parquet'] = 'parquet',
+    ) -> dict[Path, Optional[Path]]:
+        """Map each raw FHFA data file in ``data/raw/fhfa/<year>`` to its dictionary path.
+
+        Returns a mapping of data file path -> dictionary path (or None if no match).
+        """
+
+        raw_root = raw_fhfa_root if raw_fhfa_root is not None else (self.paths.raw_dir / 'fhfa')
+        year_dir = Path(raw_root) / str(year)
+        if not year_dir.exists() or not year_dir.is_dir():
+            return {}
+
+        txt_files = [p for p in year_dir.iterdir() if p.is_file() and p.suffix.lower() == '.txt']
+        result: dict[Path, Optional[Path]] = {}
+        for data_path in txt_files:
+            result[data_path] = self.resolve_dictionary_for_data_file(
+                data_path,
+                dictionary_root=dictionary_root,
+                prefer_format=prefer_format,
+            )
+        return result
+
     # Download FHFA artifacts (zips and optional PDFs)
     def download(self, base_url: str, fhfa_zip_dir: Path, include_substrings: Optional[Iterable[str]] = ('pudb',),
                  pause_seconds: Optional[int] = None) -> None:
@@ -1103,13 +1247,22 @@ def debug_run_fhfa_extract(
 
     # Extract zip contents
     print('Extracting FHFA zip contents...')
-    fhfa.extract_zip_contents(zip_dir=fhfa_zip_dir, dictionary_dir=dict_dir, raw_base_dir=paths.raw_dir)
+    # fhfa.extract_zip_contents(zip_dir=fhfa_zip_dir, dictionary_dir=dict_dir, raw_base_dir=paths.raw_dir)
     print('Extraction complete.')
 
     # Extract dictionary tables
     print('Extracting FHFA dictionary tables...')
-    fhfa.extract_dictionary_tables_all_years(dictionary_root=dict_dir, output_formats=('csv', 'parquet'), table_settings=None)
+    # fhfa.extract_dictionary_tables_all_years(dictionary_root=dict_dir, output_formats=('csv', 'parquet'), table_settings=None)
     print('Extraction complete.')
+
+    # Resolve data and dictionary paths
+    print('Resolving data and dictionary paths...')
+    map2023 = fhfa.resolve_dictionaries_for_year_folder(year=2023, raw_fhfa_root=fhfa_zip_dir, dictionary_root=dict_dir)
+    for key, value in map2023.items():
+        print(key, key.exists())
+        print(value, value.exists())
+        print('-' * 100)
+    print('Resolution complete.')
 
 
 ## Main routine
