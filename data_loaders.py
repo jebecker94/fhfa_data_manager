@@ -846,6 +846,115 @@ class FHFADataLoader:
         )
         return pl.from_pandas(pd_frame, include_index=False)
 
+    def convert_all_fixed_width_to_parquet(
+        self,
+        *,
+        raw_fhfa_root: Optional[Path] = None,
+        dictionary_root: Optional[Path] = None,
+        output_root: Optional[Path] = None,
+        years: Optional[Iterable[int]] = None,
+        min_year: Optional[int] = None,
+        max_year: Optional[int] = None,
+        encoding: str = 'latin-1',
+        separator_width: int = 1,
+        prefer_format: Literal['csv', 'parquet'] = 'parquet',
+    ) -> list[tuple[Path, Path]]:
+        """Parse all fixed-width FHFA ``.txt`` files and save as Parquet in clean folder.
+
+        Behavior
+        --------
+        - Scans ``<raw_dir>/fhfa/<year>`` for ``*.txt`` files (or ``raw_fhfa_root`` if provided)
+        - Resolves the appropriate parsed dictionary for each file
+        - Loads the fixed-width file using ``load_fixed_width_dataset``
+        - Writes a Parquet with the same base filename under ``<clean_dir>/fhfa/<year>``
+          (or ``output_root`` if provided)
+        - Skips existing outputs unless ``self.options.overwrite`` is True
+
+        Returns
+        -------
+        list[tuple[pathlib.Path, pathlib.Path]]
+            List of (input_path, output_parquet_path) successfully written.
+        """
+
+        raw_root = raw_fhfa_root if raw_fhfa_root is not None else (self.paths.raw_dir / 'fhfa')
+        out_root = output_root if output_root is not None else (self.paths.clean_dir / 'fhfa')
+        dict_root = dictionary_root if dictionary_root is not None else (self.paths.project_dir / 'dictionary_files')
+
+        if not Path(raw_root).exists():
+            print(f'Raw FHFA root does not exist: {raw_root}')
+            return []
+
+        # Determine year folders
+        if years is not None:
+            year_list = sorted({int(y) for y in years})
+        else:
+            candidates = [p for p in Path(raw_root).iterdir() if p.is_dir()]
+            inferred: list[int] = []
+            for p in candidates:
+                try:
+                    y = int(p.name)
+                except Exception:
+                    continue
+                if 1990 <= y <= 2035:
+                    inferred.append(y)
+            year_list = sorted(set(inferred))
+
+        if min_year is not None or max_year is not None:
+            lo = min_year if min_year is not None else -10**9
+            hi = max_year if max_year is not None else 10**9
+            year_list = [y for y in year_list if lo <= y <= hi]
+
+        written: list[tuple[Path, Path]] = []
+
+        for year in year_list:
+            year_dir = Path(raw_root) / str(year)
+            if not year_dir.exists() or not year_dir.is_dir():
+                continue
+
+            txt_files = [p for p in year_dir.iterdir() if p.is_file() and p.suffix.lower() == '.txt']
+            for data_path in txt_files:
+                try:
+                    dict_path = self.resolve_dictionary_for_data_file(
+                        data_path,
+                        dictionary_root=dict_root,
+                        prefer_format=prefer_format,
+                    )
+                except Exception as e:
+                    print(f'Failed resolving dictionary for {data_path.name}: {e}')
+                    continue
+
+                if dict_path is None:
+                    print(f'No dictionary found for {data_path.name}; skipping.')
+                    continue
+
+                out_dir = Path(out_root) / str(year)
+                out_path = out_dir / (data_path.stem + '.parquet')
+                if out_path.exists() and not self.options.overwrite:
+                    # Already converted; skip
+                    continue
+
+                try:
+                    df = self.load_fixed_width_dataset(
+                        data_path=data_path,
+                        dictionary_path=dict_path,
+                        encoding=encoding,
+                        separator_width=separator_width,
+                        dictionary_format=None,
+                    )
+                except Exception as e:
+                    print(f'Failed loading fixed-width for {data_path.name}: {e}')
+                    continue
+
+                try:
+                    ensure_parent_dir(out_path)
+                    df.write_parquet(str(out_path))
+                    written.append((data_path, out_path))
+                except Exception as e:
+                    print(f'Failed writing Parquet for {data_path.name}: {e}')
+                    continue
+
+        return written
+
     # Deprecated FHFA loader utilities (legacy formats)
     def combine_halves_after_2020(self, year: int, fhfa_folder: Path) -> None:
         """[Deprecated] Merge split loan files from legacy CSV releases.
@@ -1368,7 +1477,7 @@ def debug_run_fhfa_extract(
 
     # Extract dictionary tables
     print('Extracting FHFA dictionary tables...')
-    fhfa.extract_dictionary_tables_all_years(dictionary_root=dict_dir, output_formats=('csv', 'parquet'), table_settings=None)
+    # fhfa.extract_dictionary_tables_all_years(dictionary_root=dict_dir, output_formats=('csv', 'parquet'), table_settings=None)
     print('Extraction complete.')
 
     # Resolve data and dictionary paths
@@ -1380,15 +1489,20 @@ def debug_run_fhfa_extract(
     print('Resolution complete.')
 
     # Load data
-    print('Loading data...')
-    sample_data = list(map2023.keys())[5]
-    sample_dict = list(map2023.values())[5]
-    if sample_dict is None:
-        raise FileNotFoundError(f'No dictionary found for sample: {sample_data}')
-    df = fhfa.load_fixed_width_dataset(data_path=sample_data, dictionary_path=sample_dict)
-    print('Loading complete.')
+    # print('Loading data...')
+    # sample_data = list(map2023.keys())[5]
+    # sample_dict = list(map2023.values())[5]
+    # if sample_dict is None:
+    #     raise FileNotFoundError(f'No dictionary found for sample: {sample_data}')
+    # df = fhfa.load_fixed_width_dataset(data_path=sample_data, dictionary_path=sample_dict)
+    # print('Loading complete.')
 
-    return df
+    # return df
+
+    # Convert raw files to parquet
+    print('Converting raw files to parquet...')
+    fhfa.convert_all_fixed_width_to_parquet(raw_fhfa_root=fhfa_zip_dir, dictionary_root=dict_dir, output_root=paths.clean_dir / 'fhfa', years=None, encoding='latin-1', separator_width=1, prefer_format='parquet')
+    print('Conversion complete.')
 
 
 ## Main routine
