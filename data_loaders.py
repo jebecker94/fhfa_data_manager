@@ -415,27 +415,12 @@ class FHFADataLoader:
             return None
         return max(years)
 
-    # Import Conforming Loan Limits
+    # Conforming loan limits moved to ConformingLoanLimitLoader
     def import_conforming_limits(self, data_folder: Path, save_folder: Path, min_year: int = 2011, max_year: int = 2024) -> None:
-        df_parts: list[pd.DataFrame] = []
-        for year in range(min_year, max_year + 1):
-            pattern = f'{data_folder}/FullCountyLoanLimitList{year}_HERA*.xls*'
-            matches = glob.glob(pattern)
-            if not matches:
-                continue
-            filename = matches[0]
-            df_year = pd.read_excel(filename, skiprows=[0])
-            df_year.columns = [str(x).replace('\n', ' ') for x in df_year.columns]
-            df_year['Year'] = year
-            df_parts.append(df_year)
-
-        if not df_parts:
-            return
-
-        df = pd.concat(df_parts)
-        ensure_parent_dir(Path(f'{save_folder}/conforming_loan_limits_{min_year}-{max_year}.csv.gz'))
-        df.to_csv(f'{save_folder}/conforming_loan_limits_{min_year}-{max_year}.csv.gz',
-                  compression='gzip', index=False)
+        """Deprecated shim. Use ConformingLoanLimitLoader.import_conforming_limits instead."""
+        print('Deprecated: FHFADataLoader.import_conforming_limits → use ConformingLoanLimitLoader.import_conforming_limits')
+        loader = ConformingLoanLimitLoader(self.paths, self.options)
+        return loader.import_conforming_limits(data_folder=data_folder, save_folder=save_folder, min_year=min_year, max_year=max_year)
 
     # Convert Multifamily Files
     def convert_multifamily_files(self, data_folder: Path, save_folder: Path) -> None:
@@ -1003,6 +988,57 @@ class FHFADataLoader:
 
 
 # -----------------------------
+# Conforming Loan Limit Loader
+# -----------------------------
+
+class ConformingLoanLimitLoader:
+    """Standalone loader for Conforming Loan Limits (CLL) files.
+
+    These are published as yearly Excel workbooks named like
+    ``FullCountyLoanLimitList<YEAR>_HERA*.xls*``.
+    """
+
+    def __init__(self, paths: Optional[PathsConfig] = None, options: Optional[ImportOptions] = None) -> None:
+        self.paths = paths or PathsConfig.from_env()
+        self.options = options or ImportOptions()
+
+    def import_conforming_limits(self, data_folder: Path, save_folder: Path, min_year: int = 2011, max_year: int = 2024) -> None:
+        """Combine annual CLL Excel sheets into a single gzip-compressed CSV.
+
+        Parameters
+        ----------
+        data_folder: pathlib.Path
+            Directory containing the yearly CLL Excel files.
+        save_folder: pathlib.Path
+            Output directory for the combined CSV.
+        min_year, max_year: int
+            Inclusive range of years to search and include if found.
+        """
+
+        df_parts: list[pd.DataFrame] = []
+        for year in range(min_year, max_year + 1):
+            pattern = f'{data_folder}/FullCountyLoanLimitList{year}_HERA*.xls*'
+            matches = glob.glob(pattern)
+            if not matches:
+                continue
+            filename = matches[0]
+            df_year = pd.read_excel(filename, skiprows=[0], engine=self.options.excel_engine)
+            df_year.columns = [str(x).replace('\n', ' ') for x in df_year.columns]
+            df_year['Year'] = year
+            df_parts.append(df_year)
+
+        if not df_parts:
+            return
+
+        df = pd.concat(df_parts)
+        ensure_parent_dir(Path(f'{save_folder}/conforming_loan_limits_{min_year}-{max_year}.csv.gz'))
+        df.to_csv(
+            f'{save_folder}/conforming_loan_limits_{min_year}-{max_year}.csv.gz',
+            compression='gzip',
+            index=False,
+        )
+
+# -----------------------------
 # FHLB Loader
 # -----------------------------
 
@@ -1206,6 +1242,7 @@ __all__ = [
     'PathsConfig',
     'ImportOptions',
     'FHFADataLoader',
+    'ConformingLoanLimitLoader',
     'FHLBDataLoader',
 ]
 
@@ -1259,8 +1296,7 @@ def debug_run_fhfa_extract(
     print('Resolving data and dictionary paths...')
     map2023 = fhfa.resolve_dictionaries_for_year_folder(year=2023, raw_fhfa_root=fhfa_zip_dir, dictionary_root=dict_dir)
     for key, value in map2023.items():
-        print(key, key.exists())
-        print(value, value.exists())
+        print(key, value)
         print('-' * 100)
     print('Resolution complete.')
 
