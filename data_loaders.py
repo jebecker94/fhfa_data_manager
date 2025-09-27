@@ -415,13 +415,6 @@ class FHFADataLoader:
             return None
         return max(years)
 
-    # Conforming loan limits moved to ConformingLoanLimitLoader
-    def import_conforming_limits(self, data_folder: Path, save_folder: Path, min_year: int = 2011, max_year: int = 2024) -> None:
-        """Deprecated shim. Use ConformingLoanLimitLoader.import_conforming_limits instead."""
-        print('Deprecated: FHFADataLoader.import_conforming_limits → use ConformingLoanLimitLoader.import_conforming_limits')
-        loader = ConformingLoanLimitLoader(self.paths, self.options)
-        return loader.import_conforming_limits(data_folder=data_folder, save_folder=save_folder, min_year=min_year, max_year=max_year)
-
     # Convert Multifamily Files
     def convert_multifamily_files(self, data_folder: Path, save_folder: Path) -> None:
         folders = glob.glob(f'{data_folder}/*MFCensus*.zip')
@@ -551,16 +544,49 @@ class FHFADataLoader:
                             if field_col is None:
                                 continue
 
-                            # Standardize and expand single or range values (e.g., "19-23")
+                            # Try to locate a field name column for aligned name expansion
+                            name_col: Optional[str] = None
+                            for col in df.columns:
+                                norm_col = normalize_label(col)
+                                if norm_col in ('fieldname', 'variablename', 'name'):
+                                    name_col = str(col)
+                                    break
+
+                            # Standardize and expand single values, ranges (e.g., "19-23"), and comma-separated lists (e.g., "19, 21-23").
                             work = df.rename({field_col: 'Field #'})
-                            # keep original as text
+                            # keep original as text and normalize unicode dashes to '-'
                             work = work.with_columns([
                                 pl.col('Field #').cast(pl.Utf8, strict=False).alias('field_text')
+                            ]).with_columns([
+                                pl.col('field_text')
+                                  .str.replace_all('–', '-')
+                                  .str.replace_all('—', '-')
+                                  .alias('field_text')
                             ])
-                            # parse start and optional end
+                            # also capture variable name text if available and normalize dashes similarly
+                            if name_col is not None:
+                                work = work.with_columns([
+                                    pl.col(name_col).cast(pl.Utf8, strict=False).alias('var_text')
+                                ]).with_columns([
+                                    pl.col('var_text')
+                                      .str.replace_all('–', '-')
+                                      .str.replace_all('—', '-')
+                                      .alias('var_text')
+                                ])
+                            else:
+                                work = work.with_columns([
+                                    pl.lit(None).alias('var_text')
+                                ])
+                            # split on commas into tokens
                             work = work.with_columns([
-                                pl.col('field_text').str.extract(r'(\d+)', 1).cast(pl.Int64, strict=False).alias('field_start'),
-                                pl.col('field_text').str.extract(r'\d+\s*-\s*(\d+)', 1).cast(pl.Int64, strict=False).alias('field_end'),
+                                pl.col('field_text').str.split(by=',').alias('field_tokens')
+                            ]).explode('field_tokens').with_columns([
+                                pl.col('field_tokens').map_elements(lambda s: s.strip() if isinstance(s, str) else s).alias('field_token')
+                            ])
+                            # parse start and optional end from each token
+                            work = work.with_columns([
+                                pl.col('field_token').str.extract(r'(\d+)', 1).cast(pl.Int64, strict=False).alias('field_start'),
+                                pl.col('field_token').str.extract(r'\d+\s*-\s*(\d+)', 1).cast(pl.Int64, strict=False).alias('field_end'),
                             ])
                             # if no end, end = start, then build list range [start..end]
                             work = work.with_columns([
@@ -571,8 +597,45 @@ class FHFADataLoader:
                             # explode and set Field # to each number
                             work = work.explode('FieldNums').with_columns([
                                 pl.col('FieldNums').alias('Field #')
-                            ]).drop(['field_text', 'field_start', 'field_end', 'field_end2', 'FieldNums'])
-                            # Drop rows with empty Field #
+                            ])
+                            # If a variable name with trailing range exists, compute aligned name numbers
+                            if name_col is not None:
+                                work = work.with_columns([
+                                    # extract trailing name range and lengths
+                                    pl.col('var_text').str.extract(r'(\d+)\s*-\s*(\d+)\s*$', 1).cast(pl.Int64, strict=False).alias('name_start'),
+                                    pl.col('var_text').str.extract(r'(\d+)\s*-\s*(\d+)\s*$', 2).cast(pl.Int64, strict=False).alias('name_end'),
+                                ])
+                                work = work.with_columns([
+                                    (pl.col('FieldNums') - pl.col('field_start')).alias('field_offset'),
+                                    (pl.col('name_end') - pl.col('name_start')).alias('name_len'),
+                                ]).with_columns([
+                                    pl.when(
+                                        pl.col('name_start').is_not_null()
+                                        & pl.col('name_end').is_not_null()
+                                        & (pl.col('name_len') == (pl.col('field_end2') - pl.col('field_start')))
+                                    )
+                                    .then(pl.col('name_start') + pl.col('field_offset'))
+                                    .otherwise(None)
+                                    .alias('NameNum')
+                                ])
+                                # build expanded name when NameNum is available
+                                work = work.with_columns([
+                                    # name_prefix by stripping trailing range
+                                    pl.col('var_text')
+                                      .str.replace(r'\s*\d+\s*-\s*\d+\s*$', '', literal=False)
+                                      .map_elements(lambda s: s.strip() if isinstance(s, str) else s)
+                                      .alias('name_prefix'),
+                                ]).with_columns([
+                                    pl.when(pl.col('NameNum').is_not_null())
+                                      .then(pl.col('name_prefix') + pl.lit(' ') + pl.col('NameNum').cast(pl.Utf8))
+                                      .otherwise(pl.col('var_text'))
+                                      .alias(name_col)
+                                ])
+                            # Drop helper cols and rows with empty Field #
+                            drop_cols = ['field_text', 'field_tokens', 'field_token', 'field_start', 'field_end', 'field_end2', 'FieldNums']
+                            if name_col is not None:
+                                drop_cols += ['var_text', 'name_start', 'name_end', 'field_offset', 'name_len', 'name_prefix']
+                            work = work.drop(drop_cols)
                             work = work.filter(pl.col('Field #').is_not_null())
 
                             combined_frames.append(work)
@@ -678,6 +741,7 @@ class FHFADataLoader:
         dictionary_format: Optional[Literal['csv', 'parquet']] = None,
         column_name_column: str = 'Field Name',
         width_column: str = 'Field Width',
+        separator_width: int = 1,
     ) -> pl.DataFrame:
         """Load a fixed-width FHFA text file using a parsed data dictionary.
 
@@ -758,9 +822,24 @@ class FHFADataLoader:
                 column_names.append(base)
             seen[base] = count + 1
 
+        # Build explicit column specs that skip a fixed inter-field separator.
+        # This handles files where fields are fixed width and separated by
+        # exactly `separator_width` characters (commonly a single space), while
+        # still parsing correctly when some fields are blank (multiple spaces).
+        if separator_width < 0:
+            raise ValueError('separator_width must be >= 0')
+
+        colspecs: list[tuple[int, int]] = []
+        cursor: int = 0
+        for w in widths:
+            start = cursor
+            end = start + int(w)
+            colspecs.append((start, end))
+            cursor = end + separator_width
+
         pd_frame = pd.read_fwf(
             data_path,
-            widths=widths,
+            colspecs=colspecs,
             names=column_names,
             header=None,
             encoding=encoding,
@@ -1250,7 +1329,7 @@ def debug_run_fhfa_extract(
     overwrite: bool = False,
     zip_dir: Optional[Path] = None,
     dictionary_dir: Optional[Path] = None,
-) -> None:
+) -> pl.DataFrame:
     """Convenience function for IDE interactive debugging.
 
     - Uses env/default paths via ``PathsConfig.from_env()``
@@ -1289,7 +1368,7 @@ def debug_run_fhfa_extract(
 
     # Extract dictionary tables
     print('Extracting FHFA dictionary tables...')
-    # fhfa.extract_dictionary_tables_all_years(dictionary_root=dict_dir, output_formats=('csv', 'parquet'), table_settings=None)
+    fhfa.extract_dictionary_tables_all_years(dictionary_root=dict_dir, output_formats=('csv', 'parquet'), table_settings=None)
     print('Extraction complete.')
 
     # Resolve data and dictionary paths
@@ -1300,7 +1379,22 @@ def debug_run_fhfa_extract(
         print('-' * 100)
     print('Resolution complete.')
 
+    # Load data
+    print('Loading data...')
+    sample_data = list(map2023.keys())[5]
+    sample_dict = list(map2023.values())[5]
+    if sample_dict is None:
+        raise FileNotFoundError(f'No dictionary found for sample: {sample_data}')
+    df = fhfa.load_fixed_width_dataset(data_path=sample_data, dictionary_path=sample_dict)
+    print('Loading complete.')
+
+    return df
+
 
 ## Main routine
 if __name__ == '__main__':
-    debug_run_fhfa_extract()
+    try:
+        df = debug_run_fhfa_extract(overwrite=True)
+        print(df)
+    except Exception as e:
+        print(e)
