@@ -910,6 +910,139 @@ class FHFADataLoader:
 
         return written
 
+    def combine_parquet_by_type(
+        self,
+        *,
+        file_type_pattern: str,
+        enterprises: Iterable[Literal['fnma', 'fhlmc']] = ('fnma', 'fhlmc'),
+        years: Optional[Iterable[int]] = None,
+        min_year: Optional[int] = None,
+        max_year: Optional[int] = None,
+        input_root: Optional[Path] = None,
+        output_path: Optional[Path] = None,
+        write_mode: Literal['parquet', 'csv'] = 'parquet',
+    ) -> Path:
+        """Combine clean FHFA Parquet files across years for a given type.
+
+        Parameters
+        ----------
+        file_type_pattern:
+            Base stem pattern that identifies the dataset type, e.g. ``'sf{year}c'`` or ``'mf{year}b_loans'``.
+            The literal substring ``"{year}"`` will be replaced by 4-digit years when scanning.
+        enterprises:
+            Which enterprises to include. Any subset of {"fnma", "fhlmc"}.
+        years:
+            Explicit list of years to include. If None, infer from directory names under the clean root.
+        min_year, max_year:
+            Optional inclusive range filter when inferring years.
+        input_root:
+            Override for the clean FHFA root. Defaults to ``self.paths.clean_dir / 'fhfa'``.
+        output_path:
+            Optional explicit output file path. If not provided, writes to
+            ``<clean_dir>/fhfa/<file_type_pattern_without_braces>_<min>-<max>_<enterprises>.parquet``.
+        write_mode:
+            Output format: "parquet" (default) or "csv". Parquet is recommended.
+
+        Returns
+        -------
+        pathlib.Path
+            Path to the written combined dataset.
+        """
+
+        clean_root = Path(input_root) if input_root is not None else (self.paths.clean_dir / 'fhfa')
+
+        # Determine candidate years
+        if years is not None:
+            year_list = sorted({int(y) for y in years})
+        else:
+            candidates = [p for p in Path(clean_root).iterdir() if p.is_dir()]
+            inferred: list[int] = []
+            for p in candidates:
+                try:
+                    y = int(p.name)
+                except Exception:
+                    continue
+                if 1990 <= y <= 2035:
+                    inferred.append(y)
+            year_list = sorted(set(inferred))
+
+        if min_year is not None or max_year is not None:
+            lo = min_year if min_year is not None else 2008
+            hi = max_year if max_year is not None else 2035
+            year_list = [y for y in year_list if lo <= y <= hi]
+
+        ent_set = {e.lower() for e in enterprises}
+        if not ent_set.issubset({'fnma', 'fhlmc'}):
+            raise ValueError('enterprises must be any subset of {"fnma", "fhlmc"}')
+
+        # Build list of existing files to scan
+        parquet_paths: list[Path] = []
+        for y in year_list:
+            year_dir = Path(clean_root) / str(y)
+            if not year_dir.exists():
+                continue
+            # Construct expected stems for each enterprise for this year
+            stem = file_type_pattern.replace('{year}', str(y))
+            for ent in sorted(ent_set):
+                # Expected filename begins with e.g. fnma_sf2019c or fhlmc_mf2019b_loans
+                glob_pattern = f"{ent}_{stem}.parquet"
+                matches = list(year_dir.glob(glob_pattern))
+                parquet_paths.extend(matches)
+
+        if not parquet_paths:
+            raise FileNotFoundError(
+                f'No Parquet files found for pattern={file_type_pattern!r}, years={year_list}, enterprises={sorted(ent_set)} under {clean_root}'
+            )
+
+        # Prefer Polars lazy scan, then concatenate lazily
+        lazy_frames: list[pl.LazyFrame] = []
+        for p in parquet_paths:
+            try:
+                lf = pl.scan_parquet(p)
+                # Attach origin metadata as columns
+                year_match = self._infer_year_from_name(p.name) or self._infer_year_from_name(p.as_posix())
+                enterprise_val = 'fnma' if 'fnma_' in p.name.lower() else ('fhlmc' if 'fhlmc_' in p.name.lower() else None)
+                annotated = lf.with_columns([
+                    pl.lit(year_match).alias('Year'),
+                    pl.lit(enterprise_val).alias('Enterprise'),
+                ])
+                lazy_frames.append(annotated)
+            except Exception as e:
+                print(f'Failed to scan {p}: {e}')
+
+        if not lazy_frames:
+            raise RuntimeError('No readable Parquet files after scanning candidates.')
+
+        combined = pl.concat(lazy_frames, how='diagonal_relaxed')
+
+        # Determine output path
+        if output_path is not None:
+            out_path = Path(output_path)
+        else:
+            years_min = min(year_list) if year_list else None
+            years_max = max(year_list) if year_list else None
+            yrs_label = f"{years_min}-{years_max}" if years_min is not None and years_max is not None else "all"
+            ent_label = "-".join(sorted(ent_set)) if ent_set else "both"
+            # Create a safe label for the type pattern
+            type_label = file_type_pattern.replace('{year}', 'YYYY')
+            type_label = re.sub(r'[^A-Za-z0-9_\-]', '_', type_label)
+            out_dir = clean_root / 'combined'
+            out_dir.mkdir(parents=True, exist_ok=True)
+            suffix = '.parquet' if write_mode == 'parquet' else '.csv'
+            out_path = out_dir / f"{type_label}_{yrs_label}_{ent_label}{suffix}"
+
+        # Write output
+        if write_mode == 'parquet':
+            combined.sink_parquet(str(out_path))
+            # combined.collect(engine='streaming').write_parquet(str(out_path))
+        elif write_mode == 'csv':
+            combined.sink_csv(str(out_path))
+            # combined.collect(engine='streaming').write_csv(str(out_path))
+        else:
+            raise ValueError('write_mode must be either "parquet" or "csv"')
+
+        return out_path
+
 
 # -----------------------------
 # Conforming Loan Limit Loader
@@ -1226,8 +1359,13 @@ def debug_run_fhfa_extract(
 
     # Convert raw files to parquet
     print('Converting raw files to parquet...')
-    fhfa.convert_all_fixed_width_to_parquet(raw_fhfa_root=fhfa_zip_dir, dictionary_root=dict_dir, output_root=paths.clean_dir / 'fhfa', years=None, encoding='latin-1', separator_width=1, prefer_format='parquet')
+    # fhfa.convert_all_fixed_width_to_parquet(raw_fhfa_root=fhfa_zip_dir, dictionary_root=dict_dir, output_root=paths.clean_dir / 'fhfa', years=None, encoding='latin-1', separator_width=1, prefer_format='parquet')
     print('Conversion complete.')
+
+    # Combine parquet files by type
+    print('Combining parquet files by type...')
+    fhfa.combine_parquet_by_type(file_type_pattern='sf{year}c_loans', enterprises=('fnma', 'fhlmc'), min_year=2018, max_year=2023)
+    print('Combination complete.')
 
 
 ## Main routine
