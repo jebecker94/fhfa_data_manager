@@ -14,14 +14,3 @@ Notes:
 
 - Empty directories are not tracked by Git; this README ensures the folder exists.
 - Do not store secrets here. Use environment variables and a repo-root .env.example instead.
-
-Example you might adopt later:
-
-.cursor/
-  rules.md
-  .cursorignore
-  prompts/
-    add-test-coverage.md
-    refactor-module.md
-  docs/
-    architecture-overview.md

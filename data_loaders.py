@@ -93,6 +93,11 @@ class PathsConfig:
 class ImportOptions:
     """Common operational options for data loaders."""
     overwrite: bool = False
+    # Separate overwrite flags for dictionary artifacts (no fallback)
+    # - raw dictionaries: PDFs scraped or extracted from zips
+    # - clean dictionaries: parsed/combined CSV/Parquet next to PDFs
+    overwrite_raw_dicts: bool = False
+    overwrite_clean_dicts: bool = False
     pause_length_seconds: int = 5
     excel_engine: Optional[Literal['xlrd', 'openpyxl', 'odf', 'pyxlsb', 'calamine']] = 'openpyxl'
 
@@ -112,11 +117,15 @@ def drop_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _download_from_page(base_url: str,
-                        download_dir: Path,
-                        allowed_extensions: Iterable[str],
-                        included_substrings: Optional[Iterable[str]] = None,
-                        pause_seconds: int = 5) -> None:
+def _download_from_page(
+    base_url: str,
+    download_dir: Path,
+    allowed_extensions: Iterable[str],
+    included_substrings: Optional[Iterable[str]] = None,
+    pause_seconds: int = 5,
+    *,
+    overwrite: bool = False,
+) -> None:
     """Scrape page for links and download files that match filters.
 
     - allowed_extensions: case-insensitive (e.g., ['.zip'])
@@ -153,7 +162,7 @@ def _download_from_page(base_url: str,
             continue
 
         file_path = download_dir / file_name
-        if file_path.exists():
+        if file_path.exists() and not overwrite:
             continue
 
         try:
@@ -325,8 +334,13 @@ class FHFADataLoader:
         return result
 
     # Download FHFA artifacts (zips and optional PDFs)
-    def download(self, base_url: str, fhfa_zip_dir: Path, include_substrings: Optional[Iterable[str]] = ('pudb',),
-                 pause_seconds: Optional[int] = None) -> None:
+    def download(
+        self,
+        base_url: str,
+        fhfa_zip_dir: Path,
+        include_substrings: Optional[Iterable[str]] = ('pudb',),
+        pause_seconds: Optional[int] = None,
+    ) -> None:
         """Download FHFA-provided zip files (and optionally dictionaries as PDFs).
 
         The FHFA page uses mixed link labels; filter by extension and optional substrings.
@@ -335,11 +349,28 @@ class FHFADataLoader:
         # FHFA single-family datasets (zips)
         _download_from_page(base_url, fhfa_zip_dir, allowed_extensions=['.zip'], included_substrings=include_substrings, pause_seconds=ps)
 
-    def download_dictionaries(self, base_url: str, dictionary_dir: Path, pause_seconds: Optional[int] = None) -> None:
+    def download_dictionaries(
+        self,
+        base_url: str,
+        dictionary_dir: Path,
+        pause_seconds: Optional[int] = None,
+    ) -> None:
         ps = pause_seconds if pause_seconds is not None else self.options.pause_length_seconds
-        _download_from_page(base_url, dictionary_dir, allowed_extensions=['.pdf'], included_substrings=None, pause_seconds=ps)
+        _download_from_page(
+            base_url,
+            dictionary_dir,
+            allowed_extensions=['.pdf'],
+            included_substrings=None,
+            pause_seconds=ps,
+            overwrite=self.options.overwrite_raw_dicts,
+        )
 
-    def extract_zip_contents(self, zip_dir: Path, dictionary_dir: Path, raw_base_dir: Optional[Path] = None) -> None:
+    def extract_zip_contents(
+        self,
+        zip_dir: Path,
+        dictionary_dir: Path,
+        raw_base_dir: Optional[Path] = None,
+    ) -> None:
         """Extract contents of all zip files in ``zip_dir``.
 
         - .pdf files are saved into ``dictionary_dir/<year>`` (flattened)
@@ -377,7 +408,7 @@ class FHFADataLoader:
                             pdf_folder = 'unknown' if pdf_year is None else str(pdf_year)
                             out_dir = dictionary_dir / pdf_folder
                             out_path = out_dir / base_name
-                            if out_path.exists() and not self.options.overwrite:
+                            if out_path.exists() and not self.options.overwrite_raw_dicts:
                                 continue
                             out_dir.mkdir(parents=True, exist_ok=True)
                             with zf.open(member) as src, open(out_path, 'wb') as dst:
@@ -602,7 +633,7 @@ class FHFADataLoader:
                 continue
 
             combined = pl.concat(combined_frames, how='vertical', rechunk=True)
-            # Drop rows without field number, drop dupes on 'Field #', sort by it
+        # Drop rows without field number, drop dupes on 'Field #', sort by it
             if 'Field #' in combined.columns:
                 combined = combined.filter(pl.col('Field #').is_not_null())
                 combined = combined.unique(subset=['Field #'], keep='first')
@@ -620,7 +651,7 @@ class FHFADataLoader:
             out_csv = pdf_path.with_name(f"{pdf_path.stem}_combined.csv")
             out_parquet = pdf_path.with_name(f"{pdf_path.stem}_combined.parquet")
 
-            if not self.options.overwrite and out_csv.exists() and out_parquet.exists():
+            if not self.options.overwrite_clean_dicts and out_csv.exists() and out_parquet.exists():
                 continue
 
             if 'csv' in formats:
@@ -1034,10 +1065,8 @@ class FHFADataLoader:
         # Write output
         if write_mode == 'parquet':
             combined.sink_parquet(str(out_path))
-            # combined.collect(engine='streaming').write_parquet(str(out_path))
         elif write_mode == 'csv':
             combined.sink_csv(str(out_path))
-            # combined.collect(engine='streaming').write_csv(str(out_path))
         else:
             raise ValueError('write_mode must be either "parquet" or "csv"')
 
