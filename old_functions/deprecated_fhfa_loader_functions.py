@@ -1,3 +1,7 @@
+import logging
+
+
+logger = logging.getLogger(__name__)
 
     # Deprecated FHFA loader utilities (legacy formats)
     def combine_halves_after_2020(self, year: int, fhfa_folder: Path) -> None:
@@ -183,11 +187,11 @@
                     if Path(savename).exists() and not self.options.overwrite:
                         continue
 
-                    print('Extracting File:', file)
+                    logger.info('Extracting File: %s', file)
                     try:
                         z.extract(file, path=str(data_folder))
                     except Exception:
-                        print('Could not unzip file:', file, 'with Python ZipFile. Using 7z instead.')
+                        logger.warning('Could not unzip file: %s with Python ZipFile. Using 7z instead.', file)
                         unzip_string = 'C:/Program Files/7-Zip/7z.exe'
                         p = subprocess.Popen([unzip_string, 'e', f'{folder}', f'-o{data_folder}', f'{file}', '-y'])
                         p.wait()
@@ -201,7 +205,7 @@
                     table_name = None
                     for i in cursor.tables(tableType='TABLE'):
                         table_name = i.table_name
-                        print('Table Name:', table_name)
+                        logger.info('Table Name: %s', table_name)
                         break
 
                     if not table_name:
@@ -240,11 +244,11 @@
             with zipfile.ZipFile(folder) as z:
                 loan_files = [x for x in z.namelist() if 'loans.txt' in x]
                 for file in loan_files:
-                    print('Extracting File:', file)
+                    logger.info('Extracting File: %s', file)
                     try:
                         z.extract(file, path=str(data_folder))
                     except Exception:
-                        print('Could not unzip file:', file, 'with Python ZipFile. Using 7z instead.')
+                        logger.warning('Could not unzip file: %s with Python ZipFile. Using 7z instead.', file)
                         unzip_string = 'C:/Program Files/7-Zip/7z.exe'
                         p = subprocess.Popen([unzip_string, 'e', f'{folder}', f'-o{data_folder}', f'{file}', '-y'])
                         p.wait()

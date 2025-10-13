@@ -8,10 +8,14 @@ Created on Sun Jun 18 08:20:27 2023
 # Import Packages
 import datetime
 import glob
+import logging
 import pandas as pd
 import numpy as np
 from dateutil.relativedelta import relativedelta
 import config
+
+
+logger = logging.getLogger(__name__)
 
 #%% Local Functions
 # Combine FHLB Member Banks
@@ -59,7 +63,7 @@ def combine_fhlb_members(data_folder, save_folder, min_year=2009, max_year=2023)
     for file in files :
 
         # Display Progress
-        print("Reading FHLB Members from File:", file)
+        logger.info('Reading FHLB Members from File: %s', file)
 
         # Read Data (Careful: Q1 2020 has bad first line)
         if file in [f'{data_folder}/FHLB_Members_Q12020_Release.xlsx', f'{data_folder}\\FHLB_Members_Q12020_Release.xlsx'] :
