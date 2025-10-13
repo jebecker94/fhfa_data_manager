@@ -5,6 +5,7 @@ Created on Tue Sep 20 15:28:59 2022
 """
 
 # Import Packages
+import logging
 import os
 import glob
 import zipfile
@@ -16,6 +17,9 @@ import pyarrow.parquet as pq
 from pyarrow import csv
 import subprocess
 import config
+
+
+logger = logging.getLogger(__name__)
 
 #%% Local Functions
 # Import Conforming Loan Limits
@@ -99,11 +103,11 @@ def convert_fhfa_access_files(data_folder, save_folder, file_string = 'SFCensus'
                 if not os.path.exists(savename) or overwrite :
 
                     # Extract and Create Temporary File
-                    print('Extracting File:', file)
+                    logger.info('Extracting File: %s', file)
                     try :
                         z.extract(file, path = data_folder)
                     except :
-                        print('Could not unzip file:', file, 'with Pythons Zipfile package. Using 7z instead.')
+                        logger.warning('Could not unzip file: %s with Python ZipFile. Using 7z instead.', file)
                         unzip_string = "C:/Program Files/7-Zip/7z.exe"
                         p = subprocess.Popen([unzip_string, "e", f"{folder}", f"-o{data_folder}", f"{file}", "-y"])
                         p.wait()
@@ -118,7 +122,7 @@ def convert_fhfa_access_files(data_folder, save_folder, file_string = 'SFCensus'
                     cursor = conn.cursor()
                     for i in cursor.tables(tableType = 'TABLE') :
                         table_name = i.table_name
-                        print('Table Name:', table_name)
+                        logger.info('Table Name: %s', table_name)
     
                     # Read in to to DataFrame
                     df = pd.read_sql(f'select * from "{table_name}"', conn)
@@ -181,11 +185,11 @@ def convert_fhfa_multifamily_files(data_folder, save_folder, overwrite = False) 
             for file in loan_files :
 
                 # Extract and Create Temporary File
-                print('Extracting File:', file)
+                logger.info('Extracting File: %s', file)
                 try :
                     z.extract(file, path = data_folder,)
                 except :
-                    print('Could not unzip file:', file, 'with Pythons Zipfile package. Using 7z instead.')
+                    logger.warning('Could not unzip file: %s with Python ZipFile. Using 7z instead.', file)
                     unzip_string = "C:/Program Files/7-Zip/7z.exe"
                     p = subprocess.Popen([unzip_string, "e", f"{folder}", f"-o{data_folder}", f"{file}", "-y"])
                     p.wait()

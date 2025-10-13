@@ -1,9 +1,13 @@
 # Import Packages
+import logging
 import os
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import time
+
+
+logger = logging.getLogger(__name__)
 
 # Download FHFA Data
 def download_fhfa_data(base_url: str, download_dir: str, allowed_extensions: list[str], included_substring: str='', pause_length: int=5) :
@@ -60,23 +64,24 @@ def download_fhfa_data(base_url: str, download_dir: str, allowed_extensions: lis
         try:
 
             # Send a GET request to download the file
-            print(f'Downloading {file_url}...')
+            logger.info('Downloading %s...', file_url)
             file_response = requests.get(file_url)
             file_response.raise_for_status()
 
             # Write the content to a file
             with open(file_path, 'wb') as f:
                 f.write(file_response.content)
-            print(f'Saved to {file_path}')
+            logger.info('Saved to %s', file_path)
 
             # Pause for a while
             time.sleep(pause_length)
 
         except requests.RequestException as e:
-            print(f'Failed to download {file_url}: {e}')
+            logger.error('Failed to download %s: %s', file_url, e)
 
 ## Main Routine
 if __name__=='__main__':
+    logging.basicConfig(level=logging.INFO)
 
     # URL of the FHFA Public Use Database page
     base_url = 'https://www.fhfa.gov/data/pudb'

@@ -13,6 +13,7 @@ structured, testable API for orchestration and future unification.
 
 # Standard Library
 from __future__ import annotations
+import logging
 import os
 import glob
 import zipfile
@@ -44,6 +45,8 @@ import polars as pl
 # -----------------------------
 # Configuration Dataclasses
 # -----------------------------
+
+logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class PathsConfig:
@@ -166,16 +169,16 @@ def _download_from_page(
             continue
 
         try:
-            print(f'Downloading {file_url}...')
+            logger.info('Downloading %s...', file_url)
             file_response = requests.get(file_url)
             file_response.raise_for_status()
             ensure_parent_dir(file_path)
             with open(file_path, 'wb') as f:
                 f.write(file_response.content)
-            print(f'Saved to {file_path}')
+            logger.info('Saved to %s', file_path)
             time.sleep(pause_seconds)
         except requests.RequestException as e:
-            print(f'Failed to download {file_url}: {e}')
+            logger.error('Failed to download %s: %s', file_url, e)
 
 
 # -----------------------------
@@ -428,9 +431,9 @@ class FHFADataLoader:
                                 shutil.copyfileobj(src, dst)
                             continue
             except zipfile.BadZipFile:
-                print(f'Bad zip file encountered and skipped: {zip_path}')
+                logger.warning('Bad zip file encountered and skipped: %s', zip_path)
             except Exception as e:
-                print(f'Failed extracting from {zip_path}: {e}')
+                logger.error('Failed extracting from %s: %s', zip_path, e)
 
     @staticmethod
     def _infer_year_from_name(name: str) -> Optional[int]:
@@ -482,7 +485,7 @@ class FHFADataLoader:
         dict_root = dictionary_root if dictionary_root is not None else (self.paths.project_dir / 'dictionary_files')
         year_dir = Path(dict_root) / str(year)
         if not year_dir.exists() or not year_dir.is_dir():
-            print(f'Dictionary directory does not exist: {year_dir}')
+            logger.warning('Dictionary directory does not exist: %s', year_dir)
             return
 
         formats = set(output_formats)
@@ -499,7 +502,7 @@ class FHFADataLoader:
                             _find_tables = getattr(page, 'find_tables', None)
                             tables_result = _find_tables() if callable(_find_tables) else None
                         except Exception as e:
-                            print(f'find_tables failed on {pdf_path} page {page_index}: {e}')
+                            logger.warning('find_tables failed on %s page %s: %s', pdf_path, page_index, e)
                             continue
 
                         tables_list = getattr(tables_result, 'tables', None) if tables_result is not None else None
@@ -510,7 +513,7 @@ class FHFADataLoader:
                             try:
                                 pdf_df = table.to_pandas()
                             except Exception as e:
-                                print(f'to_pandas failed on {pdf_path} p{page_index}: {e}')
+                                logger.warning('to_pandas failed on %s p%s: %s', pdf_path, page_index, e)
                                 continue
 
                             df = pl.from_pandas(pdf_df)
@@ -626,7 +629,7 @@ class FHFADataLoader:
 
                             combined_frames.append(work)
             except Exception as e:
-                print(f'Failed processing {pdf_path}: {e}')
+                logger.error('Failed processing %s: %s', pdf_path, e)
                 combined_frames = []
 
             if not combined_frames:
@@ -646,7 +649,16 @@ class FHFADataLoader:
                     max_field = max(vals_list)
                     missing_numbers = sorted(set(range(min_field, max_field + 1)) - set(vals_list))
                     if missing_numbers:
-                        print(f"Warning: gaps detected in '{pdf_path.name}' Field # range {min_field}-{max_field}: missing {missing_numbers[:20]}{'...' if len(missing_numbers)>20 else ''}")
+                        preview = missing_numbers[:20]
+                        ellipsis = '...' if len(missing_numbers) > 20 else ''
+                        logger.warning(
+                            "Gaps detected in '%s' Field # range %s-%s: missing %s%s",
+                            pdf_path.name,
+                            min_field,
+                            max_field,
+                            preview,
+                            ellipsis,
+                        )
 
             out_csv = pdf_path.with_name(f"{pdf_path.stem}_combined.csv")
             out_parquet = pdf_path.with_name(f"{pdf_path.stem}_combined.parquet")
@@ -687,7 +699,7 @@ class FHFADataLoader:
         dict_root = dictionary_root if dictionary_root is not None else (self.paths.project_dir / 'dictionary_files')
         root = Path(dict_root)
         if not root.exists() or not root.is_dir():
-            print(f'Dictionary root does not exist: {root}')
+            logger.warning('Dictionary root does not exist: %s', root)
             return
 
         if years is not None:
@@ -710,7 +722,7 @@ class FHFADataLoader:
             year_list = [y for y in year_list if lo <= y <= hi]
 
         for y in year_list:
-            print(f'Processing dictionary tables for year: {y}')
+            logger.info('Processing dictionary tables for year: %s', y)
             self.extract_dictionary_tables_for_year(
                 year=y,
                 dictionary_root=root,
@@ -867,7 +879,7 @@ class FHFADataLoader:
         dict_root = dictionary_root if dictionary_root is not None else (self.paths.project_dir / 'dictionary_files')
 
         if not Path(raw_root).exists():
-            print(f'Raw FHFA root does not exist: {raw_root}')
+            logger.warning('Raw FHFA root does not exist: %s', raw_root)
             return []
 
         # Determine year folders
@@ -906,11 +918,11 @@ class FHFADataLoader:
                         prefer_format=prefer_format,
                     )
                 except Exception as e:
-                    print(f'Failed resolving dictionary for {data_path.name}: {e}')
+                    logger.warning('Failed resolving dictionary for %s: %s', data_path.name, e)
                     continue
 
                 if dict_path is None:
-                    print(f'No dictionary found for {data_path.name}; skipping.')
+                    logger.warning('No dictionary found for %s; skipping.', data_path.name)
                     continue
 
                 out_dir = Path(out_root) / str(year)
@@ -928,7 +940,7 @@ class FHFADataLoader:
                         dictionary_format=None,
                     )
                 except Exception as e:
-                    print(f'Failed loading fixed-width for {data_path.name}: {e}')
+                    logger.error('Failed loading fixed-width for %s: %s', data_path.name, e)
                     continue
 
                 try:
@@ -936,7 +948,7 @@ class FHFADataLoader:
                     df.write_parquet(str(out_path))
                     written.append((data_path, out_path))
                 except Exception as e:
-                    print(f'Failed writing Parquet for {data_path.name}: {e}')
+                    logger.error('Failed writing Parquet for %s: %s', data_path.name, e)
                     continue
 
         return written
@@ -1039,7 +1051,7 @@ class FHFADataLoader:
                 ])
                 lazy_frames.append(annotated)
             except Exception as e:
-                print(f'Failed to scan {p}: {e}')
+                logger.warning('Failed to scan %s: %s', p, e)
 
         if not lazy_frames:
             raise RuntimeError('No readable Parquet files after scanning candidates.')
@@ -1166,7 +1178,7 @@ class FHLBDataLoader:
 
         frames: list[pd.DataFrame] = []
         for file in files:
-            print('Reading FHLB Members from File:', file)
+            logger.info('Reading FHLB Members from File: %s', file)
             # Q1 2020 has bad first line
             if file.replace('\\', '/') == f'{data_folder}/FHLB_Members_Q12020_Release.xlsx':
                 df_a = pd.read_excel(file, skiprows=[0], engine=self.options.excel_engine)
@@ -1358,10 +1370,10 @@ def debug_run_fhfa_extract(
     fhfa_zip_dir = zip_dir if zip_dir is not None else (paths.raw_dir / 'fhfa')
     dict_dir = dictionary_dir if dictionary_dir is not None else (paths.project_dir / 'dictionary_files')
 
-    print(f'Using project directory: {paths.project_dir}')
-    print(f'Raw dir: {paths.raw_dir}')
-    print(f'FHFA zip dir: {fhfa_zip_dir}')
-    print(f'Dictionary dir: {dict_dir}')
+    logger.info('Using project directory: %s', paths.project_dir)
+    logger.info('Raw dir: %s', paths.raw_dir)
+    logger.info('FHFA zip dir: %s', fhfa_zip_dir)
+    logger.info('Dictionary dir: %s', dict_dir)
 
     # Download steps are intentionally commented out (already run)
     # base_url = 'https://www.fhfa.gov/data/pudb'
@@ -1369,38 +1381,39 @@ def debug_run_fhfa_extract(
     # fhfa.download_dictionaries(base_url, dict_dir, pause_seconds=None)
 
     # Extract zip contents
-    print('Extracting FHFA zip contents...')
+    logger.info('Extracting FHFA zip contents...')
     # fhfa.extract_zip_contents(zip_dir=fhfa_zip_dir, dictionary_dir=dict_dir, raw_base_dir=paths.raw_dir)
-    print('Extraction complete.')
+    logger.info('Extraction complete.')
 
     # Extract dictionary tables
-    print('Extracting FHFA dictionary tables...')
+    logger.info('Extracting FHFA dictionary tables...')
     # fhfa.extract_dictionary_tables_all_years(dictionary_root=dict_dir, output_formats=('csv', 'parquet'), table_settings=None)
-    print('Extraction complete.')
+    logger.info('Extraction complete.')
 
     # Resolve data and dictionary paths
-    print('Resolving data and dictionary paths...')
+    logger.info('Resolving data and dictionary paths...')
     map2023 = fhfa.resolve_dictionaries_for_year_folder(year=2023, raw_fhfa_root=fhfa_zip_dir, dictionary_root=dict_dir)
     for key, value in map2023.items():
-        print(key, value)
-        print('-' * 100)
-    print('Resolution complete.')
+        logger.info('%s %s', key, value)
+        logger.info('%s', '-' * 100)
+    logger.info('Resolution complete.')
 
     # Convert raw files to parquet
-    print('Converting raw files to parquet...')
+    logger.info('Converting raw files to parquet...')
     # fhfa.convert_all_fixed_width_to_parquet(raw_fhfa_root=fhfa_zip_dir, dictionary_root=dict_dir, output_root=paths.clean_dir / 'fhfa', years=None, encoding='latin-1', separator_width=1, prefer_format='parquet')
-    print('Conversion complete.')
+    logger.info('Conversion complete.')
 
     # Combine parquet files by type
-    print('Combining parquet files by type...')
+    logger.info('Combining parquet files by type...')
     fhfa.combine_parquet_by_type(file_type_pattern='sf{year}c_loans', enterprises=('fnma', 'fhlmc'), min_year=2018, max_year=2023)
-    print('Combination complete.')
+    logger.info('Combination complete.')
 
 
 ## Main routine
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
     try:
         df = debug_run_fhfa_extract(overwrite=False)
-        print(df)
-    except Exception as e:
-        print(e)
+        logger.info('%s', df)
+    except Exception:
+        logger.exception('debug_run_fhfa_extract failed')
