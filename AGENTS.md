@@ -57,4 +57,5 @@
 - When editing code, add or propose minimal tests for changed behavior.
 - Avoid breaking API changes; if necessary, document migration steps clearly.
 - Do not include or generate large data files in the repository.
+- Update `planning.md` as you complete tasks by checking off the corresponding items.
 
