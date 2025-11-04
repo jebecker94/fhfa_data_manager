@@ -33,8 +33,8 @@ Streamlined tools for downloading, validating, and transforming FHFA-related dat
 
 ## Data Loader API
 
-The `data_loaders.py` module now wraps FHFA and FHLB ETL tasks in reusable
-classes so notebooks and scripts can share the same orchestration logic.
+The `fhfa_data_manager` package provides reusable classes for FHFA and FHLB ETL tasks
+so notebooks and scripts can share the same orchestration logic.
 
 ### Configuration helpers
 
@@ -72,7 +72,7 @@ classes so notebooks and scripts can share the same orchestration logic.
 ```python
 from pathlib import Path
 
-from data_loaders import PathsConfig, FHFADataLoader
+from fhfa_data_manager import PathsConfig, FHFADataLoader
 
 paths = PathsConfig.from_env()
 fhfa_loader = FHFADataLoader(paths)

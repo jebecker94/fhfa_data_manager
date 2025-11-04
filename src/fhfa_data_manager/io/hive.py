@@ -39,7 +39,6 @@ def parquet_to_hive_dataset(
     pathlib.Path
         The resolved destination directory containing the Hive dataset.
     """
-
     dest_path = Path(destination).expanduser().resolve()
     if dest_path.exists():
         if not overwrite:
@@ -74,3 +73,4 @@ def parquet_to_hive_dataset(
     )
 
     return dest_path
+

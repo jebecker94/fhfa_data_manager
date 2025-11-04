@@ -27,7 +27,7 @@ from urllib.parse import urlparse
 import polars as pl
 import requests
 
-from data_loaders import PathsConfig
+from fhfa_data_manager.config import PathsConfig
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,6 @@ LayerName = Literal["raw", "bronze", "silver"]
 
 def _ensure_directory(path: Path) -> None:
     """Ensure that the parent directory of ``path`` exists."""
-
     path.mkdir(parents=True, exist_ok=True)
 
 
@@ -53,7 +52,6 @@ class MedallionPaths:
     @classmethod
     def create(cls, dataset_name: str, base_dir: Path) -> "MedallionPaths":
         """Construct layer directories for ``dataset_name`` under ``base_dir``."""
-
         dataset_root = base_dir / dataset_name
         raw_dir = dataset_root / "raw"
         bronze_dir = dataset_root / "bronze"
@@ -101,7 +99,6 @@ class MedallionPipeline:
         chunk_size:
             Streaming chunk size used while writing the file.
         """
-
         parsed = urlparse(url)
         resolved_name = file_name or Path(parsed.path).name
         if not resolved_name:
@@ -127,7 +124,6 @@ class MedallionPipeline:
 
     def save_raw_artifact(self, file_name: str, data: bytes, *, overwrite: bool = False) -> Path:
         """Persist an in-memory artifact to the raw layer."""
-
         target = self.paths.raw_dir / file_name
         if target.exists() and not overwrite:
             raise FileExistsError(f"Raw artifact already exists: {target}")
@@ -152,7 +148,6 @@ class MedallionPipeline:
         retaining only files that match ``allowed_extensions``. CSV inputs are
         copied directly. The returned list contains the promoted bronze files.
         """
-
         raw_artifact = raw_artifact.resolve()
         if not raw_artifact.exists():
             raise FileNotFoundError(raw_artifact)
@@ -195,7 +190,6 @@ class MedallionPipeline:
 
     def list_layer(self, layer: LayerName) -> list[Path]:
         """Return sorted paths for the requested medallion ``layer``."""
-
         directory = {
             "raw": self.paths.raw_dir,
             "bronze": self.paths.bronze_dir,
@@ -238,7 +232,6 @@ class MedallionPipeline:
         collect_kwargs:
             Additional keyword arguments forwarded to :meth:`LazyFrame.collect`.
         """
-
         candidates = bronze_files or self.list_layer("bronze")
         if not candidates:
             raise ValueError("No bronze files supplied for silver dataset build")
@@ -284,3 +277,4 @@ __all__ = [
     "MedallionPaths",
     "MedallionPipeline",
 ]
+
